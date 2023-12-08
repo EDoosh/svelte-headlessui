@@ -1,186 +1,274 @@
-import { dedupe, derived, type Readable } from "./store"
-import type { Selectable } from "./aria-selected"
-import type { Behavior } from "./behavior"
-import type { Callable } from "./callable"
+import { createWatchBehavior } from "./behavior.svelte";
+import type {
+	Behavior,
+	Callable,
+	Item,
+	ItemKey,
+	ItemOptions,
+	List,
+	ListItem,
+	Selectable
+} from "./types";
 
-export interface ItemOptions {
-  value?: any
-  disabled?: boolean
+/** Returns the unique(?) key from an item. */
+export function getKey<T extends Item>(item: T): ItemKey<T> {
+	return typeof item === "object" ? item.key : item;
+}
+/** Compares two list items to see if they are equal. */
+export function itemsEqual<T extends Item>(a: T, b: T) {
+	if (typeof a === "object" && typeof b === "object") {
+		return a.key === b.key;
+	}
+
+	return a === b;
 }
 
-export interface ListItem {
-  id: string
-  node: HTMLElement
-  text: string
-  value: any
-  disabled: boolean
+/** Returns a new list with the given node removed. */
+export function removeItem<T extends Item>(items: Array<ListItem<T>>, node: HTMLElement) {
+	return items.filter((item) => item.id !== node.id);
+}
+/** Unselect an item by its value. */
+export function unselectItem<T extends Item>(selected: Array<T>, key: T): Array<T> {
+	return selected.filter((item) => !itemsEqual(item, key));
 }
 
-export interface List {
-  items: ListItem[]
-  active: number
+/** Returns the value of the current active item in the list. */
+export function active<T extends Item>(state: List<T>) {
+	if (
+		state.active === null ||
+		state.active < 0 ||
+		state.active >= state.items.length ||
+		state.items.length === 0
+	) {
+		return undefined;
+	}
+
+	return state.items[state.active]?.value;
 }
 
-export const defaultList = () => ({
-  items: [],
-  active: -1,
-} as List)
-
-
-export function onDestroy(fn: (node: HTMLElement) => void): Behavior {
-  return node => () => fn(node)
+/** Focuses an event target's child by query selector and calls a callback when
+ *  an event is received.
+ */
+export function activate(
+	selector: string,
+	focus: (node: HTMLElement | null) => void,
+	action: Callable
+) {
+	return (event: Event) => {
+		const el = (event.target as Element).closest<HTMLElement>(selector);
+		focus(el);
+		action();
+	};
 }
 
-export const removeItem = (state: List, node: HTMLElement) => {
-  return {
-    items: state.items.filter(item => item.id !== node.id)
-  }
+/** Calls the `onselect` method on a `Selectable` when the selected element
+ *  changes.
+ */
+export function raiseSelectOnChange<T extends Item>(store: Selectable<T>): Behavior {
+	return createWatchBehavior(() => {
+		store.onselect(store.selected);
+	});
 }
 
-export const active = (state: List) => state.active === -1 || state.items.length === 0 ? undefined : state.active >= state.items.length ? state.items[state.active] : state.items[state.active]?.value
+/** Returns a new `selected` array.
+ *
+ *  - In `multi` mode, it toggles the current active value in the array.
+ *  - Else, it sets the array to the active value.
+ */
+export function selectActive<T extends Item>(state: List<T> & Selectable<T>): Array<T> {
+	if (state.active === null || state.items[state.active]?.disabled !== false) {
+		return state.selected;
+	}
 
-export const activate = (selector: string, focus: (node: HTMLElement | null) => void, ...actions: Callable[]) => (event: Event) => {
-  const el = (event.target as Element).closest(selector)
-  focus(el as HTMLElement)
-  actions.forEach(action => action())
+	// set selected item, if in multi-select mode toggle selection
+	const value = active(state);
+	if (state.multi) {
+		if (value === undefined) return state.selected;
+
+		if (state.selected.includes(value)) {
+			return state.selected.filter(
+				(alreadySelected) => !itemsEqual(alreadySelected, value)
+			);
+		}
+		return [...state.selected, value];
+	}
+
+	if (value === undefined) return [];
+	return [value];
 }
 
-export const raiseSelectOnChange = (store: Readable<Selectable>): Behavior => node => {
-  return dedupe(derived(store, $store => $store.selected)).subscribe(selected => {
-    const event = new CustomEvent('select', {
-      detail: {
-        selected,
-      }
-    })
-    node.dispatchEvent(event)
-  })
+/** Returns information about an list item entry. */
+export function getItemValues<T extends Item>(
+	node: HTMLElement,
+	options: ItemOptions<T>
+): ListItem<T> {
+	return {
+		id: node.id,
+		node,
+		get text() {
+			return options.text ?? node.textContent?.trim() ?? "";
+		},
+		get value() {
+			return options.value;
+		},
+		get disabled() {
+			return options.disabled ?? false;
+		}
+	};
 }
 
-export function selectActive(state: List & Selectable) {
-  if (state.active === -1 || state.items[state.active].disabled) return {}
-  // set selected item, if in multi-select mode toggle selection
-  const value = active(state)
-  const selected = state.multi
-    ? state.selected.includes(value)
-      ? state.selected.filter((selected: any) => selected !== value)
-      : [...state.selected, value]
-    : value
-  return { selected }
+/** Returns the index of the first non-disabled list item.
+ *
+ *  In the event there is no selectable item, it returns `null`.
+ */
+export function firstActive(items: List<Item>["items"]) {
+	const index = items.findIndex((item) => !item.disabled);
+	if (index === -1) return null;
+	return index;
 }
 
-export function getItemValues(node: HTMLElement, options?: ItemOptions) {
-  const text = node.textContent?.trim() ?? ''
-  return {
-    text,
-    value: options?.value || text,
-    disabled: options?.disabled ?? false
-  }
+/** Returns the index of the last non-disabled list item.
+ *
+ *  In the event there is no selectable item, it returns `null`.
+ */
+export function lastActive<T extends Item>(state: List<T>) {
+	const index = state.items.findLastIndex((item) => !item.disabled);
+	if (index === -1) return null;
+	return index;
 }
 
-// return index of first non-disabled item
-export const firstActive = (state: List) => state.items.findIndex(item => !item.disabled)
+/** Returns the index of the previous non-disabled list item.
+ *
+ *  In the event there is no selected item, it finds from the end of the list.
+ *  Returns `null` if there are no non-disabled items.
+ */
+export function previousActive(state: List<Item>) {
+	let index = state.active ?? state.items.length;
+	while (--index > -1) {
+		if (state.items[index]?.disabled === false) {
+			return index;
+		}
+	}
 
-// return index of previous non-disabled item
-export const previousActive = (state: List) => {
-  let x = state.active === -1 ? state.items.length : state.active
-  while (--x > -1) {
-    if (!state.items[x].disabled) {
-      return x
-    }
-  }
-  return state.active
+	// No previous item. We were already on the first selectable item.
+	return state.active;
 }
 
-export const previousActiveSelectable = (state: List & Selectable) => {
-  // make last selected item active
-  if (state.active === -1 && (!state.multi || state.selected.length > 0)) {
-    const index = state.items.findIndex(x => x.value === (state.multi ? state.selected[state.selected.length - 1] : state.selected))
+/** Returns the index of the previous non-disabled list item.
+ *
+ *  In the event there is no selected item, it finds from the end of the list.
+ *  Returns `null` if there are no non-disabled items.
+ */
+export function nextActive<T extends Item>(state: List<T>) {
+	let index = state.active ?? -1;
+	while (++index < state.items.length) {
+		if (state.items[index]?.disabled === false) {
+			return index;
+		}
+	}
 
-    // handles selected items being removed from available list (fallthrough to selecting last active item)
-    if (index > -1) {
-      return index
-    }
-  }
-
-  return previousActive(state)
+	// No next item. We were already on the last selectable item.
+	return state.active;
 }
 
-// return index of next non-disabled item
-export const nextActive = (state: List) => {
-  let x = state.active
-  while (++x < state.items.length) {
-    if (!state.items[x].disabled) {
-      return x
-    }
-  }
-  return state.active
+/** Make the last selected item the active item, or the last item if there
+ *  are no selected items.
+ */
+export function previousActiveSelectable<T extends Item>(state: List<T> & Selectable<T>) {
+	const lastSelected = state.selected[state.selected.length - 1];
+	if (state.active === null && lastSelected !== undefined) {
+		const index = state.items.findIndex(
+			(x) => itemsEqual(x.value, lastSelected)
+		);
+
+		// handles selected items being removed from available list
+		// (fallthrough to selecting last active item)
+		if (index > -1) {
+			return index;
+		}
+	}
+
+	return previousActive(state);
 }
 
-export const nextActiveSelectable = (state: List & Selectable) => {
-  // make first selected item active
-  if (state.active === -1 && (!state.multi || state.selected.length > 0)) {
-    const index = state.items.findIndex(x => x.value === (state.multi ? state.selected[0] : state.selected))
+/** Make the first selected item the active item, or the first item if there
+ *  are no selected items.
+ */
+export function nextActiveSelectable<T extends Item>(state: List<T> & Selectable<T>) {
+	const firstSelected = state.selected[0];
+	if (state.active === null && firstSelected !== undefined) {
+		const index = state.items.findIndex((x) => itemsEqual(x.value, firstSelected));
 
-    // handles selected items being removed from available list (fallthrough to selecting first active item
-    if (index > -1) {
-      return index
-    }
-  }
+		// handles selected items being removed from available list
+		// (fallthrough to selecting first active item
+		if (index > -1) {
+			return index;
+		}
+	}
 
-  return nextActive(state)
+	return nextActive(state);
 }
 
-// return index of next non-disabled item
-export const lastActive = (state: List) => findLastIndex(state.items, item => !item.disabled)
+/** Find and focus a list item by the item's node. */
+export function focusByNode<T extends Item>(
+	list: List<T>,
+	focus: (active: number | null) => void,
+	node: HTMLElement | null
+) {
+	if (node === null) {
+		focus(null);
+		return;
+	}
 
-/**
-* Returns the index of the last element in the array where predicate is true, and -1
-* otherwise.
-* @param array The source array to search in
-* @param predicate find calls predicate once for each element of the array, in descending
-* order, until it finds one where predicate returns true. If such an element is found,
-* findLastIndex immediately returns that element index. Otherwise, findLastIndex returns -1.
-*/
-export function findLastIndex<T>(array: T[], predicate: (value: T, index: number, obj: T[]) => boolean): number {
-  let l = array.length;
-  while (l--) {
-    if (predicate(array[l], l, array))
-      return l;
-  }
-  return -1;
+	focus(
+		list.items.findIndex((item) => item.id === node.id && !item.disabled) ??
+			null
+	);
 }
 
-export const getUpdater = (node: HTMLElement, getState: () => List, setState: (part: Partial<List>) => void) => (options?: ItemOptions) => {
-  const state = getState()
-  const values = getItemValues(node, options)
-  const item = state.items.find(item => item.id === node.id)
-  if (item) {
-    if (item.text === values.text && item.value === values.value && item.disabled === values.disabled) return
-    Object.assign(item, values)
-  } else {
-    state.items.push({ id: node.id, node, ...values })
-  }
-  setState({ items: state.items })
+/** Select the first item in the list matching the query. */
+export function searchAndFocus<T extends Item>(
+	list: List<T>,
+	focus: (active: number) => void,
+	query: string,
+	prefixOnly: boolean = false
+) {
+	const searchable =
+		list.active === null
+			? list.items
+			: list.items
+					.slice(list.active + 1)
+					.concat(list.items.slice(0, list.active + 1));
+
+	const re = new RegExp(`${prefixOnly ? "^" : ""}${query}`, "i");
+	const found = searchable.findIndex(
+		(x) => x.text.match(re) !== null && !x.disabled
+	);
+
+	if (found !== -1) {
+		const index = (found + (list.active ?? -1) + 1) % list.items.length;
+		focus(index);
+	}
 }
 
-export const getFocuser = (getState: () => List, focus: (active: number) => void) => (node: HTMLElement | null) => {
-  const state = getState()
-  focus(node ? state.items.findIndex(item => item.id === node.id && !item.disabled) : -1)
+/** Finds an item's index by its value. */
+export function findItemIndex<T extends Item>(
+	items: Array<ListItem<T>>,
+	value: T | undefined
+): number | undefined {
+	if (value === undefined) return undefined;
+	const index = items.findIndex((item) => itemsEqual(item.value, value));
+	return index === -1 ? undefined : index;
 }
 
-export const getSearch = (getState: () => List, focus: (active: number) => void, prefixOnly: boolean = false) => (query: string) => {
-  const state = getState()
-  const searchable = state.active === -1
-    ? state.items
-    : state.items
-      .slice(state.active + 1)
-      .concat(state.items.slice(0, state.active + 1))
+/** Returns if the item is currently selected, by the item's key. */
+export function isKeySelected<T extends Item>(selected: Array<T>, key: ItemKey<T>): boolean {
+	return selected.findIndex((i) => key === getKey(i)) !== -1;
+}
 
-  const re = new RegExp(`${prefixOnly ? '^' : ''}${query}`, 'i')
-  const found = searchable.findIndex(x => x.text.match(re) && !x.disabled)
-
-  if (found > -1) {
-    const index = (found + state.active + 1) % state.items.length
-    focus(index)
-  }
+/** Returns if the item is currently active, by the item's key. */
+export function isKeyActive<T extends Item>(list: List<T>, key: ItemKey<T>): boolean {
+	const currentActive = active(list);
+	if (currentActive === undefined) return false;
+	return getKey(currentActive) === key;
 }
